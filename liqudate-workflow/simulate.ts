@@ -44,11 +44,44 @@ const account = privateKeyToAccount(formattedPK as `0x${string}`);
 // Helpers
 // ---------------------------------------------------------------------------
 
-// Values dari isLiquidatable() di-scale 1e18
+// Values from isLiquidatable() are scaled by 1e18
 function formatUsd(value: bigint): string {
   const whole = value / 10n ** 18n;
-  const frac = ((value % 10n ** 18n) * 100n) / 10n ** 18n;
-  return `$${whole}.${frac.toString().padStart(2, "0")}`;
+  let frac = ((value % 10n ** 18n) * 100n) / 10n ** 18n;
+  let fracStr = frac.toString().replace(/0+$/, "");
+  if (fracStr.length < 2) fracStr = fracStr.padEnd(2, "0");
+  return `$${whole}.${fracStr}`;
+}
+
+function calculateHealthFactor(
+  collateralLimit: bigint,
+  borrowValue: bigint,
+): { hf: string; status: string } {
+  if (borrowValue === 0n) return { hf: "∞", status: "✅ safe" };
+
+  const colLimit = Number(collateralLimit) / 1e18;
+  const bor = Number(borrowValue) / 1e18;
+
+  // =========================================================================
+  // MATCHING HEALTH FACTOR & BORROW LIMIT
+  // =========================================================================
+  // 1) Borrow Limit (Max debt) = Raw Collateral Value x Liquidation Threshold
+  //    Example                  = $1900.00 (Total WETH) x 82.5% = $1567.50
+  //
+  //    * Smart Contract `isLiquidatable()` already returns this value
+  //
+  // 2) Health Factor (HF)        = Borrow Limit / Total Debt (Borrow Debt)
+  //    Example                    = $1567.50 / $1360.00 = 1.1525 (⚠️ Risky)
+  // =========================================================================
+
+  const hf = colLimit / bor;
+
+  if (hf > 10) return { hf: "∞", status: "✅ safe" };
+
+  const hfStr = hf.toFixed(2);
+  if (hf > 1.5) return { hf: hfStr, status: "✅ safe" };
+  if (hf >= 1.0) return { hf: hfStr, status: "⚠️ risky" };
+  return { hf: hfStr, status: "🔴 liquidation" };
 }
 
 // ---------------------------------------------------------------------------
@@ -88,13 +121,48 @@ async function fetchBorrowers(
   };
 
   const lendingPoolLower = lendingPool.toLowerCase();
-  return (json?.data?.borrowDebts?.items ?? [])
+  const users = (json?.data?.borrowDebts?.items ?? [])
     .filter(
       (item) =>
         item.lendingPoolAddress.toLowerCase() === lendingPoolLower &&
         BigInt(item.amount ?? "0") > 0n,
     )
     .map((item) => item.user);
+
+  return [...new Set(users)];
+}
+
+async function fetchLiquidationThresholds(
+  indexerUrl: string,
+): Promise<Map<string, number>> {
+  const query = `query MyQuery {
+    liquidationThresholdSets {
+      items {
+        lendingPool
+        threshold
+      }
+    }
+  }`;
+
+  const resp = await fetch(indexerUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+
+  if (!resp.ok) throw new Error(`Indexer HTTP error: ${resp.status}`);
+
+  const json = (await resp.json()) as any;
+  const items = json?.data?.liquidationThresholdSets?.items ?? [];
+
+  const thresholds = new Map<string, number>();
+  for (const item of items) {
+    if (item.lendingPool && item.threshold) {
+      const t = Number(item.threshold) / 1e18;
+      thresholds.set(item.lendingPool.toLowerCase(), t);
+    }
+  }
+  return thresholds;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,11 +194,17 @@ async function main() {
   const approvedPools = new Set<string>();
   const summaryTable: any[] = [];
 
-  for (const pool of config.pools) {
-    console.log(`\n${"=".repeat(60)}`);
-    console.log(`POOL: ${pool.lendingPool}`);
-    console.log(`Borrow token: ${pool.borrowToken}`);
+  // Fetch all thresholds first
+  let thresholdsMap = new Map<string, number>();
+  try {
+    thresholdsMap = await fetchLiquidationThresholds(config.indexerUrl);
+  } catch (e: any) {
+    console.log(
+      `[WARN] Thresholds fetch failed, defaulting to 0.8: ${e.message}`,
+    );
+  }
 
+  for (const pool of config.pools) {
     // 1. Fetch borrowers from indexer
     let borrowers: string[];
     try {
@@ -140,11 +214,25 @@ async function main() {
       continue;
     }
 
-    console.log(`Active borrowers: ${borrowers.length}`);
+    if (borrowers.length === 0) {
+      continue;
+    }
+
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`POOL: ${pool.lendingPool}`);
+    console.log(`Borrow token: ${pool.borrowToken}`);
+
+    // Filter out borrowers who definitely have 0 balance early on if possible,
+    // or we skip them during string iteration.
+    let activeBorrowersCount = 0;
+
+    const width = 80;
+    const borderLine = "─".repeat(width);
+    const logRow = (text: string) => {
+      console.log(`│ ${text.padEnd(width - 2, " ")} │`);
+    };
 
     for (const borrower of borrowers) {
-      console.log(`\n--- borrower: ${borrower}`);
-
       // 2. Check health on-chain
       let liquidatable: boolean;
       let borrowValue: bigint;
@@ -166,49 +254,53 @@ async function main() {
         continue;
       }
 
-      console.log(`  liquidatable  : ${liquidatable}`);
-      console.log(`  borrowValue   : ${formatUsd(borrowValue)}`);
-      console.log(`  collateralValue: ${formatUsd(collateralValue)}`);
-      console.log(`  bonus         : ${formatUsd(bonus)}`);
-
       if (borrowValue === 0n && collateralValue === 0n) {
-        console.log(`  → ALREADY LIQUIDATED (0 balance), skip`);
-        summaryTable.push({
-          Pool: pool.lendingPool,
-          Borrower: borrower,
-          Health: "ZERO_BALANCE",
-          Borrow: "$0.00",
-          Collateral: "$0.00",
-          Action: "SKIPPED",
-          Tx: "-",
-        });
         continue;
       }
+
+      activeBorrowersCount++;
+
+      const poolLendingLower = pool.lendingPool.toLowerCase();
+      const poolRouterLower = pool.router ? pool.router.toLowerCase() : "";
+
+      const { hf, status: hfStatus } = calculateHealthFactor(
+        collateralValue,
+        borrowValue,
+      );
+
+      console.log(`\n┌${borderLine}┐`);
+      logRow(`Borrower:     ${borrower}`);
+      logRow(`Health Factor:${hf} (${hfStatus})`);
+      logRow(`Borrow Debt:  ${formatUsd(borrowValue)}`);
+      logRow(`Borrow Limit: ${formatUsd(collateralValue)}`);
+      console.log(`├${borderLine}┤`);
 
       if (!liquidatable) {
-        console.log(`  → HEALTHY, skip`);
+        logRow(`Status:       HEALTHY, skipping execution`);
+        console.log(`└${borderLine}┘`);
         summaryTable.push({
           Pool: pool.lendingPool,
           Borrower: borrower,
-          Health: "HEALTHY",
+          Health: hf,
           Borrow: formatUsd(borrowValue),
-          Collateral: formatUsd(collateralValue),
+          "Limit (Col)": formatUsd(collateralValue),
           Action: "SKIPPED",
           Tx: "-",
         });
         continue;
       }
 
-      console.log(`  → LIQUIDATABLE`);
+      logRow(`Status:       LIQUIDATABLE`);
 
       if (DRY_RUN) {
-        console.log(`  → DRY_RUN=true, tidak eksekusi TX`);
+        logRow(`Action:       DRY_RUN=true, skipping tx broadcast`);
+        console.log(`└${borderLine}┘`);
         summaryTable.push({
           Pool: pool.lendingPool,
           Borrower: borrower,
-          Health: "LIQUIDATABLE",
+          Health: hf,
           Borrow: formatUsd(borrowValue),
-          Collateral: formatUsd(collateralValue),
+          "Limit (Col)": formatUsd(collateralValue),
           Action: "DRY RUN",
           Tx: "-",
         });
@@ -217,9 +309,7 @@ async function main() {
 
       // 3. Approve borrow token (sekali per pool)
       if (!approvedPools.has(pool.lendingPool)) {
-        console.log(
-          `  [APPROVE] ${pool.borrowToken} -> ${pool.lendingPool}...`,
-        );
+        logRow(`[APPROVE]     ${pool.borrowToken} -> ${pool.lendingPool}...`);
         try {
           const approveTx = await walletClient.writeContract({
             address: pool.borrowToken as Address,
@@ -232,20 +322,26 @@ async function main() {
               ),
             ],
           });
-          console.log(`  [APPROVE] TX: ${approveTx}`);
+
+          process.stdout.write(
+            `│ [APPROVE]     Waiting for tx confirmation...`.padEnd(
+              width,
+              " ",
+            ) + `│\r`,
+          );
           await publicClient.waitForTransactionReceipt({ hash: approveTx });
-          console.log(`  [APPROVE] Confirmed`);
+          logRow(`[APPROVE]     Confirmed: ${approveTx}`);
           approvedPools.add(pool.lendingPool);
         } catch (e: any) {
-          console.log(
-            `  [ERROR] approve failed: ${e.shortMessage || e.message}`,
+          logRow(
+            `[ERROR]       approve failed: ${e.shortMessage || e.message}`,
           );
+          console.log(`└${borderLine}┘`);
           break;
         }
       }
 
       // 4. Execute liquidation
-      console.log(`  [LIQUIDATE] calling liquidation(${borrower})...`);
       try {
         const liquidateTx = await walletClient.writeContract({
           address: pool.lendingPool as Address,
@@ -253,38 +349,51 @@ async function main() {
           functionName: "liquidation",
           args: [borrower as Address],
         });
-        console.log(`  [LIQUIDATE] TX: ${liquidateTx}`);
+
+        process.stdout.write(
+          `│ [LIQUIDATE]   Waiting for tx confirmation...`.padEnd(width, " ") +
+            `│\r`,
+        );
+
         const receipt = await publicClient.waitForTransactionReceipt({
           hash: liquidateTx,
         });
-        console.log(
-          `  [LIQUIDATED] Block: ${receipt.blockNumber} Status: ${receipt.status}`,
+        logRow(`[LIQUIDATED]  Tx: ${liquidateTx}`);
+        logRow(
+          `[LIQUIDATED]  Block: ${receipt.blockNumber} (Status: ${receipt.status})`,
         );
+        console.log(`└${borderLine}┘`);
 
         summaryTable.push({
           Pool: pool.lendingPool,
           Borrower: borrower,
-          Health: "LIQUIDATABLE",
+          Health: hf,
           Borrow: formatUsd(borrowValue),
-          Collateral: formatUsd(collateralValue),
+          "Limit (Col)": formatUsd(collateralValue),
           Action: "LIQUIDATED",
           Tx: liquidateTx,
         });
       } catch (e: any) {
-        console.log(
-          `  [ERROR] liquidation failed: ${e.shortMessage || e.message}`,
+        logRow(
+          `[ERROR]       liquidation failed: ${e.shortMessage || e.message}`,
         );
+        console.log(`└${borderLine}┘`);
+
         summaryTable.push({
           Pool: pool.lendingPool,
           Borrower: borrower,
-          Health: "LIQUIDATABLE",
+          Health: hf,
           Borrow: formatUsd(borrowValue),
-          Collateral: formatUsd(collateralValue),
+          "Limit (Col)": formatUsd(collateralValue),
           Action: "ERROR",
           Tx: e.shortMessage || e.message,
         });
       }
     }
+
+    console.log(
+      `\nActive borrowers processed for pool: ${activeBorrowersCount}`,
+    );
   }
 
   console.log(`\n\n======================================`);

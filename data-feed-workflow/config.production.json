@@ -9,7 +9,7 @@
   "oracles": [
     {
       "name": "USDT/USD",
-      "address": "0xAE75c0638Ff015663Bf88348d4aabD2b6feE85CF",
+      "address": "0xAE75c0638Ff015663Bf88348d4aabD2b6feE85CF", 
       "feedId": "0x0000000000000000000000000000000000000000000000000000000000000001"
     },
     {

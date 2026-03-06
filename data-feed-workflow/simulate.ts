@@ -23,11 +23,11 @@ const formattedPK = PK.startsWith("0x") ? PK : `0x${PK}`;
 const account = privateKeyToAccount(formattedPK as `0x${string}`);
 
 // Configuration Toggle
-const USE_REAL_PRICES = true; // Set to false to use mock prices
+const USE_REAL_PRICES = false; // Set to false to use mock prices
 
 // Mock price configurations
 const MOCK_BASE_PRICE = 100000000n; // $1.00
-const MOCK_WETH_PRICE = 190000000000n; // $1900.00
+const MOCK_WETH_PRICE = 164000000000n; // $1900.00
 const MOCK_WBTC_PRICE = 6000000000000n; // $60000.00
 
 // Map Oracle names to MEXC symbols
@@ -57,7 +57,9 @@ async function fetchMexcPrice(symbol: string): Promise<number | null> {
   }
 }
 
-async function getOraclePrice(oracleName: string): Promise<bigint> {
+async function getOraclePrice(
+  oracleName: string,
+): Promise<{ price: bigint; source: string }> {
   const getMockPrice = (name: string) => {
     if (name === "WETH/USD") return MOCK_WETH_PRICE;
     if (name === "WBTC/USD") return MOCK_WBTC_PRICE;
@@ -67,39 +69,39 @@ async function getOraclePrice(oracleName: string): Promise<bigint> {
   if (!USE_REAL_PRICES) {
     // Return Mock Prices
     if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
-      return 100000000n;
+      return { price: 100000000n, source: "Mocked locally ($1.00)" };
     }
-    return getMockPrice(oracleName);
+    return { price: getMockPrice(oracleName), source: "Mocked locally" };
   }
 
   // Handle Stablecoins directly if needed, or if mapping is missing
   if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
-    console.log(
-      `[Price Source] Using hardcoded $1.00 for stablecoin/native mock ${oracleName}`,
-    );
-    return 100000000n;
+    return {
+      price: 100000000n,
+      source: "Hardcoded $1.00 (Stablecoin/Native Mock)",
+    };
   }
 
   const mexcSymbol = MEXC_SYMBOL_MAP[oracleName];
   if (!mexcSymbol) {
-    console.log(
-      `[Price Source] No MEXC mapping for ${oracleName}, falling back to mock.`,
-    );
-    return getMockPrice(oracleName);
+    return {
+      price: getMockPrice(oracleName),
+      source: "No MEXC mapping found, falling back to mock",
+    };
   }
 
   const priceNum = await fetchMexcPrice(mexcSymbol);
 
   if (priceNum !== null) {
-    console.log(`[Price Source] MEXC API: ${mexcSymbol} = $${priceNum}`);
-    // Convert to BigInt with 8 decimals (multiply by 10^8)
-    // Math.round is used to avoid floating point precision issues when converting to BigInt
-    return BigInt(Math.round(priceNum * 100000000));
+    return {
+      price: BigInt(Math.round(priceNum * 100000000)),
+      source: `MEXC API: ${mexcSymbol} = $${priceNum}`,
+    };
   } else {
-    console.log(
-      `[Price Source] MEXC API fetch failed for ${oracleName}, falling back to mock.`,
-    );
-    return getMockPrice(oracleName);
+    return {
+      price: getMockPrice(oracleName),
+      source: "MEXC API fetch failed, falling back to mock",
+    };
   }
 }
 
@@ -139,16 +141,23 @@ async function main() {
 
   const summaryTable: any[] = [];
 
+  const width = 80;
+  const borderLine = "─".repeat(width);
+  const logRow = (text: string) => {
+    console.log(`│ ${text.padEnd(width - 2, " ")} │`);
+  };
+
   for (const oracle of config.oracles) {
     const address = oracle.address as Address;
-    console.log(`\n======================================`);
-    console.log(`Evaluating ${oracle.name} @ ${address}`);
-
-    // Specifically mock WETH/USD to $1900 as per requested
-    // const price = oracle.name === "WETH/USD" ? 190000000000n : basePrice;
 
     // Get price based on configuration toggle
-    const price = await getOraclePrice(oracle.name);
+    const { price, source } = await getOraclePrice(oracle.name);
+
+    console.log(`\n┌${borderLine}┐`);
+    logRow(`Oracle:     ${oracle.name}`);
+    logRow(`Address:    ${address}`);
+    logRow(`Source:     ${source}`);
+    console.log(`├${borderLine}┤`);
 
     try {
       // 1. Read before state
@@ -167,11 +176,13 @@ async function main() {
 
       const divisor = 10n ** BigInt(decimals);
       const whole = answer / divisor;
-      const frac = (answer % divisor).toString().padStart(decimals, "0");
+      let frac = (answer % divisor)
+        .toString()
+        .padStart(decimals, "0")
+        .replace(/0+$/, "");
+      if (frac.length < 2) frac = frac.padEnd(2, "0");
 
-      console.log(
-        `[BEFORE] Current on-chain price: $${whole}.${frac} (Raw: ${answer})`,
-      );
+      logRow(`Before:     $${whole}.${frac} (Raw: ${answer})`);
 
       // 2. Broadcast actual transaction
       const txHash = await walletClient.writeContract({
@@ -180,14 +191,15 @@ async function main() {
         functionName: "setPrice",
         args: [price],
       });
-      console.log(`[WRITE] Broadcasting new price transaction (${price})...`);
-      console.log(`[SUCCESS] Transaction Hash: ${txHash}`);
+      logRow(`Tx Hash:    ${txHash}`);
 
-      console.log(`Waiting for confirmation...`);
+      const statusText = `Status:     Waiting for confirmation...`;
+      process.stdout.write(`│ ${statusText.padEnd(width - 2, " ")} │\r`);
+
       const receipt = await publicClient.waitForTransactionReceipt({
         hash: txHash,
       });
-      console.log(`[CONFIRMED] Block: ${receipt.blockNumber}`);
+      logRow(`Status:     Confirmed in Block ${receipt.blockNumber}`);
 
       // 3. Read after state
       const [
@@ -203,11 +215,14 @@ async function main() {
       })) as [bigint, bigint, bigint, bigint, bigint];
 
       const newWhole = newAnswer / divisor;
-      const newFrac = (newAnswer % divisor).toString().padStart(decimals, "0");
+      let newFrac = (newAnswer % divisor)
+        .toString()
+        .padStart(decimals, "0")
+        .replace(/0+$/, "");
+      if (newFrac.length < 2) newFrac = newFrac.padEnd(2, "0");
 
-      console.log(
-        `[AFTER] New on-chain price: $${newWhole}.${newFrac} (Raw: ${newAnswer})`,
-      );
+      logRow(`After:      $${newWhole}.${newFrac} (Raw: ${newAnswer})`);
+      console.log(`└${borderLine}┘`);
 
       summaryTable.push({
         Oracle: oracle.name,
@@ -217,7 +232,8 @@ async function main() {
         "Tx Hash": txHash,
       });
     } catch (e: any) {
-      console.log(`[FAILED] ${oracle.name} - ${e.shortMessage || e.message}`);
+      logRow(`Failed:     ${e.shortMessage || e.message}`);
+      console.log(`└${borderLine}┘`);
       summaryTable.push({
         Oracle: oracle.name,
         "Before ($)": "ERROR",
@@ -229,7 +245,7 @@ async function main() {
   }
 
   console.log(`\n\n======================================`);
-  console.log(`      📊 EXECUTION SUMMARY`);
+  console.log(`📊 EXECUTION SUMMARY`);
   console.log(`======================================\n`);
   console.table(summaryTable);
 }
