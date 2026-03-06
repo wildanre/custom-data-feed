@@ -218,19 +218,22 @@ async function main() {
       continue;
     }
 
-    console.log(`\n${"=".repeat(60)}`);
-    console.log(`POOL: ${pool.lendingPool}`);
-    console.log(`Borrow token: ${pool.borrowToken}`);
-
-    // Filter out borrowers who definitely have 0 balance early on if possible,
-    // or we skip them during string iteration.
-    let activeBorrowersCount = 0;
-
     const width = 80;
     const borderLine = "─".repeat(width);
     const logRow = (text: string) => {
       console.log(`│ ${text.padEnd(width - 2, " ")} │`);
     };
+
+    console.log(`\n┌${borderLine}┐`);
+    logRow(`POOL SUMMARY`);
+    console.log(`├${borderLine}┤`);
+    logRow(`Lending Pool: ${pool.lendingPool}`);
+    logRow(`Borrow Token: ${pool.borrowToken}`);
+    console.log(`└${borderLine}┘`);
+
+    // Filter out borrowers who definitely have 0 balance early on if possible,
+    // or we skip them during string iteration.
+    let activeBorrowersCount = 0;
 
     for (const borrower of borrowers) {
       // 2. Check health on-chain
