@@ -4,8 +4,8 @@
  * Direct on-chain liquidation using viem (tanpa Chainlink DON).
  * Jalankan: bun run simulate:direct
  *
- * Set DRY_RUN = true  → hanya baca + log health status
- * Set DRY_RUN = false → approve + liquidation TX
+ * Set DRY_RUN = true  → approve + liquidation TX
+ * Set DRY_RUN = false 
  */
 
 import {
@@ -23,7 +23,7 @@ import { ERC20_ABI, HELPER_ABI, LENDING_POOL_ABI } from "../contracts/helperAbi.
 // Config
 // ---------------------------------------------------------------------------
 
-const DRY_RUN = true; // Set false untuk eksekusi liquidation
+const DRY_RUN = false; // Set true untuk dry run (baca saja, tidak kirim TX)
 
 const RPC_URL = "https://worldchain-sepolia.g.alchemy.com/public";
 

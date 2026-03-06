@@ -22,12 +22,11 @@ if (!PK || PK === "your-eth-private-key") {
 const account = privateKeyToAccount(PK.startsWith("0x") ? PK : `0x${PK}`);
 
 // Configuration Toggle
-const USE_BINANCE_PRICES = true; // Set to false to use mock prices
+const USE_BINANCE_PRICES = false; // Set to false to use mock prices
 
 // Mock price configurations
 const MOCK_BASE_PRICE = 100000000n; // $1.00
-const MOCK_WETH_PRICE = 190000000000n; // $1900.00
-const MOCK_WBTC_PRICE = 6827614000000n; // $68276.14
+const MOCK_WETH_PRICE = 80000000000n; // $1900.00
 
 // Map Oracle names to Binance symbols
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
