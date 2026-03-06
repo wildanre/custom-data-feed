@@ -1,3 +1,5 @@
 *.env
 node_modules
 .claude
+.env
+.cre_build_tmp.js
