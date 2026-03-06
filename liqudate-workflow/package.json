@@ -7,7 +7,7 @@
     "postinstall": "bun x cre-setup",
     "simulate": "cd .. && cre workflow simulate ./liqudate-workflow --target staging-settings",
     "simulate:local": "cd .. && cre workflow simulate ./liqudate-workflow --target local-simulation",
-    "simulate:direct": "bun run simulate.ts",
+    "simulate:direct": "CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts",
     "deploy": "cd .. && cre workflow deploy ./liqudate-workflow --target production-settings"
   },
   "license": "UNLICENSED",

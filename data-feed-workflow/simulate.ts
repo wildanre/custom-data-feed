@@ -14,24 +14,26 @@ import fs from "fs";
 const RPC_URL = "https://worldchain-sepolia.g.alchemy.com/public";
 
 // Load private key from env
-const PK = process.env.CRE_ETH_PRIVATE_KEY as `0x${string}`;
+const PK = process.env.CRE_ETH_PRIVATE_KEY as string;
 if (!PK || PK === "your-eth-private-key") {
   throw new Error("Missing or invalid CRE_ETH_PRIVATE_KEY in environment");
 }
 
-const account = privateKeyToAccount(PK.startsWith("0x") ? PK : `0x${PK}`);
+const formattedPK = PK.startsWith("0x") ? PK : `0x${PK}`;
+const account = privateKeyToAccount(formattedPK as `0x${string}`);
 
 // Configuration Toggle
-const USE_BINANCE_PRICES = false; // Set to false to use mock prices
+const USE_BINANCE_PRICES = true; // Set to false to use mock prices
 
 // Mock price configurations
 const MOCK_BASE_PRICE = 100000000n; // $1.00
-const MOCK_WETH_PRICE = 80000000000n; // $1900.00
+const MOCK_WETH_PRICE = 190000000000n; // $1900.00
+const MOCK_WBTC_PRICE = 6000000000000n; // $60000.00
 
 // Map Oracle names to Binance symbols
 const BINANCE_SYMBOL_MAP: Record<string, string> = {
-  "USDT/USD": "USDTBIDR", // USDT/USD isn't a direct pair on Binance often, though we can use it as 1 or fetch something else. We'll handle stablecoins specially.
-  "NATIVE/USD": "ETHUSDT", // Assuming Native is ETH on Worldchain
+  "USDT/USD": "USDTBIDR",
+  "NATIVE/USD": "USDTBIDR",
   "WETH/USD": "ETHUSDT",
   "WBTC/USD": "BTCUSDT",
 };
@@ -47,7 +49,7 @@ async function fetchBinancePrice(symbol: string): Promise<number | null> {
       );
       return null;
     }
-    const data = await response.json();
+    const data = (await response.json()) as { price: string };
     return parseFloat(data.price);
   } catch (error) {
     console.warn(`Error fetching ${symbol} from Binance:`, error);
@@ -56,17 +58,26 @@ async function fetchBinancePrice(symbol: string): Promise<number | null> {
 }
 
 async function getOraclePrice(oracleName: string): Promise<bigint> {
+  const getMockPrice = (name: string) => {
+    if (name === "WETH/USD") return MOCK_WETH_PRICE;
+    if (name === "WBTC/USD") return MOCK_WBTC_PRICE;
+    return MOCK_BASE_PRICE;
+  };
+
   if (!USE_BINANCE_PRICES) {
     // Return Mock Prices
-    return oracleName === "WETH/USD" ? MOCK_WETH_PRICE : MOCK_BASE_PRICE;
+    if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
+      return 100000000n;
+    }
+    return getMockPrice(oracleName);
   }
 
   // Handle Stablecoins directly if needed, or if mapping is missing
-  if (oracleName === "USDT/USD") {
+  if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
     console.log(
-      `[Price Source] Using hardcoded $1.00 for stablecoin ${oracleName}`,
+      `[Price Source] Using hardcoded $1.00 for stablecoin/native mock ${oracleName}`,
     );
-    return 100000000n; // $1.00 with 8 decimals
+    return 100000000n;
   }
 
   const binanceSymbol = BINANCE_SYMBOL_MAP[oracleName];
@@ -74,7 +85,7 @@ async function getOraclePrice(oracleName: string): Promise<bigint> {
     console.log(
       `[Price Source] No Binance mapping for ${oracleName}, falling back to mock.`,
     );
-    return oracleName === "WETH/USD" ? MOCK_WETH_PRICE : MOCK_BASE_PRICE;
+    return getMockPrice(oracleName);
   }
 
   const priceNum = await fetchBinancePrice(binanceSymbol);
@@ -88,7 +99,7 @@ async function getOraclePrice(oracleName: string): Promise<bigint> {
     console.log(
       `[Price Source] Binance API fetch failed for ${oracleName}, falling back to mock.`,
     );
-    return oracleName === "WETH/USD" ? MOCK_WETH_PRICE : MOCK_BASE_PRICE;
+    return getMockPrice(oracleName);
   }
 }
 
@@ -125,6 +136,8 @@ async function main() {
 
   // We'll write the same mock price + timestamp structure the workflow does
   // const basePrice = 100000000n; // $1.00 for stablecoins, we'll use this for test
+
+  const summaryTable: any[] = [];
 
   for (const oracle of config.oracles) {
     const address = oracle.address as Address;
@@ -195,10 +208,30 @@ async function main() {
       console.log(
         `[AFTER] New on-chain price: $${newWhole}.${newFrac} (Raw: ${newAnswer})`,
       );
+
+      summaryTable.push({
+        Oracle: oracle.name,
+        "Before ($)": `${whole}.${frac}`,
+        "After ($)": `${newWhole}.${newFrac}`,
+        Block: receipt.blockNumber.toString(),
+        "Tx Hash": txHash,
+      });
     } catch (e: any) {
       console.log(`[FAILED] ${oracle.name} - ${e.shortMessage || e.message}`);
+      summaryTable.push({
+        Oracle: oracle.name,
+        "Before ($)": "ERROR",
+        "After ($)": "ERROR",
+        Block: "FAILED",
+        "Tx Hash": e.shortMessage || e.message,
+      });
     }
   }
+
+  console.log(`\n\n======================================`);
+  console.log(`      📊 EXECUTION SUMMARY`);
+  console.log(`======================================\n`);
+  console.table(summaryTable);
 }
 
 main().catch(console.error);

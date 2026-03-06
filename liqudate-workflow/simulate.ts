@@ -1,11 +1,11 @@
 /**
  * Liquidation Simulate Script
  *
- * Direct on-chain liquidation using viem (tanpa Chainlink DON).
- * Jalankan: bun run simulate:direct
+ * Direct on-chain liquidation using viem (without Chainlink DON).
+ * Run: bun run simulate:direct
  *
  * Set DRY_RUN = true  → approve + liquidation TX
- * Set DRY_RUN = false 
+ * Set DRY_RUN = false
  */
 
 import {
@@ -17,22 +17,28 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { worldchainSepolia } from "viem/chains";
 import fs from "fs";
-import { ERC20_ABI, HELPER_ABI, LENDING_POOL_ABI } from "../contracts/helperAbi.js";
+import {
+  ERC20_ABI,
+  HELPER_ABI,
+  LENDING_POOL_ABI,
+} from "../contracts/helperAbi.js";
 
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
-const DRY_RUN = false; // Set true untuk dry run (baca saja, tidak kirim TX)
+const DRY_RUN = false; // Set true for dry run (read-only, no TX sent)
 
 const RPC_URL = "https://worldchain-sepolia.g.alchemy.com/public";
 
-const PK = process.env.CRE_ETH_PRIVATE_KEY as `0x${string}`;
+// Load private key from env
+const PK = process.env.CRE_ETH_PRIVATE_KEY as string;
 if (!PK || PK === "your-eth-private-key") {
   throw new Error("Missing or invalid CRE_ETH_PRIVATE_KEY in environment");
 }
 
-const account = privateKeyToAccount(PK.startsWith("0x") ? PK : `0x${PK}`);
+const formattedPK = PK.startsWith("0x") ? PK : `0x${PK}`;
+const account = privateKeyToAccount(formattedPK as `0x${string}`);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -55,7 +61,10 @@ interface BorrowDebt {
   amount: string;
 }
 
-async function fetchBorrowers(indexerUrl: string, lendingPool: string): Promise<string[]> {
+async function fetchBorrowers(
+  indexerUrl: string,
+  lendingPool: string,
+): Promise<string[]> {
   const query = `{
     borrowDebts(limit: 500) {
       items {
@@ -115,6 +124,7 @@ async function main() {
 
   // Track approved pools
   const approvedPools = new Set<string>();
+  const summaryTable: any[] = [];
 
   for (const pool of config.pools) {
     console.log(`\n${"=".repeat(60)}`);
@@ -150,7 +160,9 @@ async function main() {
             args: [borrower as Address, pool.lendingPool as Address],
           })) as [boolean, bigint, bigint, bigint];
       } catch (e: any) {
-        console.log(`[ERROR] isLiquidatable failed: ${e.shortMessage || e.message}`);
+        console.log(
+          `[ERROR] isLiquidatable failed: ${e.shortMessage || e.message}`,
+        );
         continue;
       }
 
@@ -161,6 +173,15 @@ async function main() {
 
       if (!liquidatable) {
         console.log(`  → HEALTHY, skip`);
+        summaryTable.push({
+          Pool: pool.lendingPool,
+          Borrower: borrower,
+          Health: "HEALTHY",
+          Borrow: formatUsd(borrowValue),
+          Collateral: formatUsd(collateralValue),
+          Action: "SKIPPED",
+          Tx: "-",
+        });
         continue;
       }
 
@@ -168,25 +189,43 @@ async function main() {
 
       if (DRY_RUN) {
         console.log(`  → DRY_RUN=true, tidak eksekusi TX`);
+        summaryTable.push({
+          Pool: pool.lendingPool,
+          Borrower: borrower,
+          Health: "LIQUIDATABLE",
+          Borrow: formatUsd(borrowValue),
+          Collateral: formatUsd(collateralValue),
+          Action: "DRY RUN",
+          Tx: "-",
+        });
         continue;
       }
 
       // 3. Approve borrow token (sekali per pool)
       if (!approvedPools.has(pool.lendingPool)) {
-        console.log(`  [APPROVE] ${pool.borrowToken} -> ${pool.lendingPool}...`);
+        console.log(
+          `  [APPROVE] ${pool.borrowToken} -> ${pool.lendingPool}...`,
+        );
         try {
           const approveTx = await walletClient.writeContract({
             address: pool.borrowToken as Address,
             abi: ERC20_ABI,
             functionName: "approve",
-            args: [pool.lendingPool as Address, BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")],
+            args: [
+              pool.lendingPool as Address,
+              BigInt(
+                "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              ),
+            ],
           });
           console.log(`  [APPROVE] TX: ${approveTx}`);
           await publicClient.waitForTransactionReceipt({ hash: approveTx });
           console.log(`  [APPROVE] Confirmed`);
           approvedPools.add(pool.lendingPool);
         } catch (e: any) {
-          console.log(`  [ERROR] approve failed: ${e.shortMessage || e.message}`);
+          console.log(
+            `  [ERROR] approve failed: ${e.shortMessage || e.message}`,
+          );
           break;
         }
       }
@@ -201,16 +240,47 @@ async function main() {
           args: [borrower as Address],
         });
         console.log(`  [LIQUIDATE] TX: ${liquidateTx}`);
-        const receipt = await publicClient.waitForTransactionReceipt({ hash: liquidateTx });
-        console.log(`  [LIQUIDATED] Block: ${receipt.blockNumber} Status: ${receipt.status}`);
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: liquidateTx,
+        });
+        console.log(
+          `  [LIQUIDATED] Block: ${receipt.blockNumber} Status: ${receipt.status}`,
+        );
+
+        summaryTable.push({
+          Pool: pool.lendingPool,
+          Borrower: borrower,
+          Health: "LIQUIDATABLE",
+          Borrow: formatUsd(borrowValue),
+          Collateral: formatUsd(collateralValue),
+          Action: "LIQUIDATED",
+          Tx: liquidateTx,
+        });
       } catch (e: any) {
-        console.log(`  [ERROR] liquidation failed: ${e.shortMessage || e.message}`);
+        console.log(
+          `  [ERROR] liquidation failed: ${e.shortMessage || e.message}`,
+        );
+        summaryTable.push({
+          Pool: pool.lendingPool,
+          Borrower: borrower,
+          Health: "LIQUIDATABLE",
+          Borrow: formatUsd(borrowValue),
+          Collateral: formatUsd(collateralValue),
+          Action: "ERROR",
+          Tx: e.shortMessage || e.message,
+        });
       }
     }
   }
 
-  console.log(`\n${"=".repeat(60)}`);
-  console.log(`Done.`);
+  console.log(`\n\n======================================`);
+  console.log(`      📊 EXECUTION SUMMARY`);
+  console.log(`======================================\n`);
+  if (summaryTable.length > 0) {
+    console.table(summaryTable);
+  } else {
+    console.log("No active borrowers found across any pools.");
+  }
 }
 
 main().catch(console.error);

@@ -38,7 +38,6 @@ Runs the full CRE workflow logic against the real RPC but **mocks all writes**.
 Use this to verify the workflow logic before deploying.
 
 ```bash
-cd /Users/danuste/Desktop/hackaton/cre/custom-data-feed
 cre workflow simulate ./liqudate-workflow --target local-simulation
 ```
 
@@ -68,7 +67,6 @@ The DON will run the cron automatically every minute and execute liquidations on
 Make sure `config.production.json` has `"enableLiquidation": true` before deploying.
 
 ```bash
-cd /Users/danuste/Desktop/hackaton/cre/custom-data-feed
 cre workflow deploy ./liqudate-workflow --target production-settings
 ```
 
