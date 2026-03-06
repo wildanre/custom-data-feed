@@ -57,3 +57,7 @@ When you are ready, you can deploy the finalized workflow script to the Testnet 
 cd /Users/danuste/Desktop/hackaton/cre/custom-data-feed
 cre workflow deploy ./data-feed-workflow --target production-settings
 ```
+
+```bash
+CRE_ETH_PRIVATE_KEY=$(grep 'CRE_ETH_PRIVATE_KEY=' ../.env | cut -d '=' -f2) bun run simulate.ts
+```
