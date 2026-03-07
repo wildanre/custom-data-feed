@@ -9,6 +9,71 @@ The project is split into two primary Chainlink CRE workflows:
 1. **`data-feed-workflow/`**: Responsible for polling off-chain API prices (such as MEXC/Binance API) and pushing updates to the on-chain Oracle smart contracts. 
 2. **`liquidate-workflow/`**: Responsible for scanning the Orbita Lending Pools, verifying borrower Health Factors (`isLiquidatable`), and executing smart contract Liquidations.
 
+## 🏗️ Protocol Architecture & Flow
+
+### 1. Data Feed Workflow Flowchart
+This workflow runs every minute to ensure the Lending Protocol's Oracles are always up-to-date with real-world Exchange values.
+
+```text
+[Cron Trigger] (Every 1 Minute)
+      │
+      ▼
+[1. Fetch Active Oracle Targets] ──────► Reads `config.staging.json`
+      │
+      ▼
+[2. Query Off-Chain APIs]
+      ├─► MEXC API (Volatile Assets like WETH, WBTC)
+      └─► Mock Constants (Stablecoins like USDT)
+      │
+      ▼
+[3. Validate Price & Staleness]
+      ├─► If Stale or price deviates > threshold
+      │     └─► Proceed to Update
+      └─► If Healthy
+            └─► Skip Update
+      │
+      ▼
+[4. Dispatch Transaction] ─────────────► Encodes `setPrice()` payload
+      │
+      ▼
+[5. Chainlink Keystone Forwarder] ─────► Submits securely via DON
+      │
+      ▼
+[Smart Contract Oracles Updated]
+```
+
+### 2. Liquidation Workflow Flowchart
+This workflow runs continuously to guarantee protocol solvency, stepping in whenever a borrower's collateral value drops below the required threshold to maintain their debt.
+
+```text
+[Cron Trigger] (Every 1 Minute)
+      │
+      ▼
+[1. Fetch Active Borrowers] ───────────► Sends GraphQL POST to Orbita Indexer (Ponder)
+      │
+      ▼
+[2. Evaluate Borrower Health] ─────────► Queries `Helper.isLiquidatable(user, pool)`
+      │
+      ▼
+[3. Decision Matrix]
+      ├─► If Health < 1.0
+      │     └─► Proceed to Liquidation
+      └─► If Health >= 1.0
+            └─► Skip user
+      │
+      ▼
+[4. Approve Borrow Tokens] ────────────► Liquidator approves ERC20 spending to Pool
+      │                                  (Only once per pool)
+      ▼
+[5. Execute Liquidation] ──────────────► Encodes `liquidation(user)` payload
+      │
+      ▼
+[6. Chainlink Keystone Forwarder] ─────► Submits securely via DON
+      │
+      ▼
+[Borrower Liquidated On-Chain]
+```
+
 ## 🛠️ Two Ways to Execute Workflows
 
 In this repository, each workflow directory contains **two distinct execution scripts**: `main.ts` and `simulate.ts`. It is important to understand the difference between them.
