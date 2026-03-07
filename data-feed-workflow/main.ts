@@ -18,20 +18,34 @@ import {
   LAST_FINALIZED_BLOCK_NUMBER,
   Runner,
   TxStatus,
+  HTTPClient,
   type Runtime,
+  type NodeRuntime,
 } from "@chainlink/cre-sdk";
-import {
-  type Address,
-  decodeFunctionResult,
-  encodeFunctionData,
-  zeroAddress,
-} from "viem";
+import { type Address, decodeFunctionResult, encodeFunctionData } from "viem";
 import { z } from "zod";
 import {
   AGGREGATOR_V3_ABI,
   ORACLE_ABI,
   PRICE_CONSUMER_ABI,
 } from "../contracts/abi.js";
+
+// ---------------------------------------------------------------------------
+// Mock Price Configurations & MEXC API
+// ---------------------------------------------------------------------------
+
+// Toggle this to false to use static fallback mocks instead of real API
+const USE_REAL_PRICES = true;
+
+const MOCK_BASE_PRICE = 100000000n; // $1.00
+const MOCK_WETH_PRICE = 200000000000n; // $1900.00
+const MOCK_WBTC_PRICE = 7000000000000n; // $60000.00
+
+// Map Oracle names to MEXC symbols
+const MEXC_SYMBOL_MAP: Record<string, string> = {
+  "WETH/USD": "ETHUSDT",
+  "WBTC/USD": "BTCUSDT",
+};
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -94,23 +108,84 @@ function hasDeviation(
 }
 
 // ---------------------------------------------------------------------------
-// Read latestRoundData from oracle
+function fetchPriceTask(
+  oracleName: string,
+  runtime: Runtime<Config>,
+): bigint | null {
+  // If it's a stablecoin or native testnet token, force $1.00 mock
+  if (oracleName === "USDT/USD" || oracleName === "NATIVE/USD") {
+    runtime.log(
+      `[Price Source] Using hardcoded $1.00 for stablecoin/native mock`,
+    );
+    return MOCK_BASE_PRICE;
+  }
+
+  // Use MEXC for volatile assets if enabled
+  if (USE_REAL_PRICES) {
+    const symbol = MEXC_SYMBOL_MAP[oracleName];
+    if (symbol) {
+      try {
+        const client = new HTTPClient();
+        const requestUrl = `https://api.mexc.com/api/v3/ticker/price?symbol=${symbol}`;
+
+        // Use CRE HttpCapability to bypass Node Native Fetch restriction
+        const responseFn = client.sendRequest(
+          runtime as unknown as NodeRuntime<Config>,
+          {
+            url: requestUrl,
+            method: "GET",
+            headers: {},
+          },
+        );
+
+        const response = responseFn.result();
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          throw new Error(`HTTP Error ${response.statusCode}`);
+        }
+
+        const rawBody = Buffer.from(response.body).toString("utf-8");
+        const resJson = JSON.parse(rawBody) as any;
+
+        if (resJson && resJson.price) {
+          runtime.log(`[Price Source] MEXC API: ${symbol} = $${resJson.price}`);
+          return BigInt(Math.floor(parseFloat(resJson.price) * 1e8));
+        }
+
+        throw new Error("Invalid price payload");
+      } catch (err) {
+        runtime.log(
+          `[WARN] MEXC API Failed for ${symbol}: ${String(err)}. Falling back to mock.`,
+        );
+        return null;
+      }
+    }
+  }
+
+  // Fallback Mocks
+  runtime.log(`[Price Source] Mocked locally`);
+  if (oracleName.includes("WETH")) return MOCK_WETH_PRICE;
+  if (oracleName.includes("WBTC")) return MOCK_WBTC_PRICE;
+
+  return MOCK_BASE_PRICE;
+}
+
+// ---------------------------------------------------------------------------
+// Read stored price from Oracle or external
 // ---------------------------------------------------------------------------
 
-interface RoundData {
+async function readOraclePriceDirect(
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  oracle: Oracle,
+): Promise<{
   roundId: bigint;
   answer: bigint;
   startedAt: bigint;
   updatedAt: bigint;
   answeredInRound: bigint;
   decimals: number;
-}
-
-function readOraclePrice(
-  runtime: Runtime<Config>,
-  evmClient: EVMClient,
-  oracle: Oracle,
-): RoundData | null {
+} | null> {
   if (!oracle.address || oracle.address === `0x${"0".repeat(40)}`) {
     runtime.log(`[SKIP] ${oracle.name}: address not configured`);
     return null;
@@ -125,7 +200,7 @@ function readOraclePrice(
     const roundResult = evmClient
       .callContract(runtime, {
         call: encodeCallMsg({
-          from: zeroAddress,
+          from: "0x0000000000000000000000000000000000000000" as Address,
           to: oracle.address as Address,
           data: roundCallData,
         }),
@@ -133,7 +208,7 @@ function readOraclePrice(
       })
       .result();
 
-    const [roundId, answer, startedAt, updatedAt, answeredInRound] =
+    let [roundId, answer, startedAt, updatedAt, answeredInRound] =
       decodeFunctionResult({
         abi: AGGREGATOR_V3_ABI,
         functionName: "latestRoundData",
@@ -148,7 +223,7 @@ function readOraclePrice(
     const decimalsResult = evmClient
       .callContract(runtime, {
         call: encodeCallMsg({
-          from: zeroAddress,
+          from: "0x0000000000000000000000000000000000000000" as Address,
           to: oracle.address as Address,
           data: decimalsCallData,
         }),
@@ -161,6 +236,12 @@ function readOraclePrice(
       functionName: "decimals",
       data: bytesToHex(decimalsResult.data),
     }) as number;
+
+    // OVERRIDE on-chain answer with Mock/Live Data
+    const liveAnswer = fetchPriceTask(oracle.name, runtime);
+    if (liveAnswer !== null) {
+      answer = liveAnswer;
+    }
 
     return { roundId, answer, startedAt, updatedAt, answeredInRound, decimals };
   } catch (err) {
@@ -242,7 +323,7 @@ function readStoredPrice(
     const tsResult = evmClient
       .callContract(runtime, {
         call: encodeCallMsg({
-          from: zeroAddress,
+          from: "0x0000000000000000000000000000000000000000" as Address,
           to: priceConsumerAddress as Address,
           data: tsCallData,
         }),
@@ -265,7 +346,7 @@ function readStoredPrice(
     const priceResult = evmClient
       .callContract(runtime, {
         call: encodeCallMsg({
-          from: zeroAddress,
+          from: "0x0000000000000000000000000000000000000000" as Address,
           to: priceConsumerAddress as Address,
           data: priceCallData,
         }),
@@ -289,7 +370,7 @@ function readStoredPrice(
 // Main cron callback
 // ---------------------------------------------------------------------------
 
-const onCronTrigger = (runtime: Runtime<Config>): string => {
+const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
   const config = runtime.config;
   const ts = new Date().toISOString();
 
@@ -315,7 +396,7 @@ const onCronTrigger = (runtime: Runtime<Config>): string => {
   for (const oracle of config.oracles) {
     runtime.log(`[READ] ${oracle.name} @ ${oracle.address}`);
 
-    const data = readOraclePrice(runtime, evmClient, oracle);
+    const data = await readOraclePriceDirect(runtime, evmClient, oracle);
 
     if (!data) {
       skipped++;

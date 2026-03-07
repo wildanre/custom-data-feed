@@ -32,11 +32,11 @@ local-simulation:
 # ==========================================================================
 staging-settings:
   rpcs:
-    - chain-name: ethereum-testnet-sepolia
-      url: https://ethereum-sepolia-rpc.publicnode.com
+    - chain-name: ethereum-testnet-sepolia-worldchain-1
+      url: https://worldchain-sepolia.g.alchemy.com/public
 
 # ==========================================================================
 production-settings:
   rpcs:
-    - chain-name: ethereum-testnet-sepolia
-      url: https://ethereum-sepolia-rpc.publicnode.com
+    - chain-name: ethereum-testnet-sepolia-worldchain-1
+      url: https://worldchain-sepolia.g.alchemy.com/public

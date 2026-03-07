@@ -51,7 +51,7 @@ bun run simulate:direct
 
 **To run only the Liquidation Evaluator:**
 ```bash
-cd liqudate-workflow
+cd liquidate-workflow
 bun run simulate:direct
 ```
 

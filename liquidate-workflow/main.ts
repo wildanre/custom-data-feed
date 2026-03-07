@@ -18,7 +18,9 @@ import {
   LAST_FINALIZED_BLOCK_NUMBER,
   Runner,
   TxStatus,
+  HTTPClient,
   type Runtime,
+  type NodeRuntime,
 } from "@chainlink/cre-sdk";
 import {
   type Address,
@@ -28,7 +30,11 @@ import {
   zeroAddress,
 } from "viem";
 import { z } from "zod";
-import { ERC20_ABI, HELPER_ABI, LENDING_POOL_ABI } from "../contracts/helperAbi.js";
+import {
+  ERC20_ABI,
+  HELPER_ABI,
+  LENDING_POOL_ABI,
+} from "../contracts/helperAbi.js";
 
 // ---------------------------------------------------------------------------
 // Config schema
@@ -42,7 +48,9 @@ const poolSchema = z.object({
 
 const configSchema = z.object({
   schedule: z.string().default("*/30 * * * * *"),
-  chainSelectorName: z.string().default("ethereum-testnet-sepolia-worldchain-1"),
+  chainSelectorName: z
+    .string()
+    .default("ethereum-testnet-sepolia-worldchain-1"),
   helperAddress: z.string(),
   indexerUrl: z.string(),
   enableLiquidation: z.boolean().default(false),
@@ -74,6 +82,7 @@ interface BorrowDebt {
 }
 
 async function fetchBorrowersFromIndexer(
+  runtime: Runtime<Config>,
   indexerUrl: string,
   lendingPool: string,
 ): Promise<string[]> {
@@ -88,17 +97,28 @@ async function fetchBorrowersFromIndexer(
   }`;
 
   try {
-    const resp = await fetch(indexerUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-    });
+    const client = new HTTPClient();
 
-    if (!resp.ok) {
+    // Use native CRE HttpCapability for POST request
+    const responseFn = client.sendRequest(
+      runtime as unknown as NodeRuntime<Config>,
+      {
+        url: indexerUrl,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: Buffer.from(JSON.stringify({ query })).toString("base64"),
+      },
+    );
+
+    const response = responseFn.result();
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      runtime.log(`[WARN] Indexer HTTP Error: ${response.statusCode}`);
       return [];
     }
 
-    const json = (await resp.json()) as {
+    const rawBody = Buffer.from(response.body).toString("utf-8");
+    const json = JSON.parse(rawBody) as {
       data?: { borrowDebts?: { items?: BorrowDebt[] } };
     };
 
@@ -110,8 +130,10 @@ async function fetchBorrowersFromIndexer(
           item.lendingPoolAddress.toLowerCase() === lendingPoolLower &&
           BigInt(item.amount ?? "0") > 0n,
       )
-      .map((item) => item.user);
-  } catch {
+      .map((item) => item.user)
+      .slice(0, 15); 
+  } catch (err) {
+    runtime.log(`[ERROR] Indexer Fetch Failed: ${String(err)}`);
     return [];
   }
 }
@@ -145,7 +167,7 @@ function checkHealth(
     const result = evmClient
       .callContract(runtime, {
         call: encodeCallMsg({
-          from: zeroAddress,
+          from: "0x0000000000000000000000000000000000000000" as Address,
           to: helperAddress as Address,
           data: callData,
         }),
@@ -205,7 +227,9 @@ function approveToken(
       return false;
     }
 
-    runtime.log(`[APPROVE] token=${tokenAddress} spender=${spender} tx=${resp.txHash}`);
+    runtime.log(
+      `[APPROVE] token=${tokenAddress} spender=${spender} tx=${resp.txHash}`,
+    );
     return true;
   } catch (err) {
     runtime.log(`[ERROR] approve: ${String(err)}`);
@@ -247,11 +271,15 @@ function executeLiquidation(
       .result();
 
     if (resp.txStatus !== TxStatus.SUCCESS) {
-      runtime.log(`[ERROR] liquidation(${borrower}) failed - tx=${resp.txHash}`);
+      runtime.log(
+        `[ERROR] liquidation(${borrower}) failed - tx=${resp.txHash}`,
+      );
       return false;
     }
 
-    runtime.log(`[LIQUIDATED] borrower=${borrower} pool=${lendingPool} tx=${resp.txHash}`);
+    runtime.log(
+      `[LIQUIDATED] borrower=${borrower} pool=${lendingPool} tx=${resp.txHash}`,
+    );
     return true;
   } catch (err) {
     runtime.log(`[ERROR] liquidation(${borrower}): ${String(err)}`);
@@ -290,6 +318,7 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
     runtime.log(`[POOL] lendingPool=${pool.lendingPool}`);
 
     const borrowers = await fetchBorrowersFromIndexer(
+      runtime,
       config.indexerUrl,
       pool.lendingPool,
     );
@@ -313,10 +342,10 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
 
       runtime.log(
         `[HEALTH] borrower=${borrower}` +
-        ` | liquidatable=${liquidatable}` +
-        ` | borrowValue=${formatUsd(borrowValue)}` +
-        ` | collateralValue=${formatUsd(collateralValue)}` +
-        ` | bonus=${formatUsd(bonus)}`,
+          ` | liquidatable=${liquidatable}` +
+          ` | borrowValue=${formatUsd(borrowValue)}` +
+          ` | collateralValue=${formatUsd(collateralValue)}` +
+          ` | bonus=${formatUsd(bonus)}`,
       );
 
       if (!liquidatable) {
@@ -324,7 +353,9 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
         continue;
       }
 
-      runtime.log(`[LIQUIDATABLE] ${borrower}: borrow=${formatUsd(borrowValue)} > collateral threshold`);
+      runtime.log(
+        `[LIQUIDATABLE] ${borrower}: borrow=${formatUsd(borrowValue)} > collateral threshold`,
+      );
 
       if (!config.enableLiquidation) {
         runtime.log(`[SKIP] enableLiquidation=false`);
@@ -333,7 +364,12 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
 
       // Approve borrow token once per pool per cycle
       if (!approvedPools.has(pool.lendingPool)) {
-        const ok = approveToken(runtime, evmClient, pool.borrowToken, pool.lendingPool);
+        const ok = approveToken(
+          runtime,
+          evmClient,
+          pool.borrowToken,
+          pool.lendingPool,
+        );
         if (!ok) {
           runtime.log(`[ERROR] approve failed, skipping pool`);
           break;
@@ -341,12 +377,19 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
         approvedPools.add(pool.lendingPool);
       }
 
-      const success = executeLiquidation(runtime, evmClient, borrower, pool.lendingPool);
+      const success = executeLiquidation(
+        runtime,
+        evmClient,
+        borrower,
+        pool.lendingPool,
+      );
       if (success) totalLiquidated++;
     }
   }
 
-  runtime.log(`[DONE] checked=${totalChecked} liquidated=${totalLiquidated} ts=${ts}`);
+  runtime.log(
+    `[DONE] checked=${totalChecked} liquidated=${totalLiquidated} ts=${ts}`,
+  );
   return "complete";
 };
 
@@ -356,7 +399,9 @@ const onCronTrigger = async (runtime: Runtime<Config>): Promise<string> => {
 
 const initWorkflow = (config: Config) => {
   const cron = new CronCapability();
-  return [handler(cron.trigger({ schedule: config.schedule }), onCronTrigger as any)];
+  return [
+    handler(cron.trigger({ schedule: config.schedule }), onCronTrigger as any),
+  ];
 };
 
 // ---------------------------------------------------------------------------

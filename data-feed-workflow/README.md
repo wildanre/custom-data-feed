@@ -1,154 +1,46 @@
-# Trying out the Developer PoR example
+# Orbita Data Feed Workflow 📈
 
-This template provides an end-to-end Proof-of-Reserve (PoR) example (including precompiled smart contracts). It's designed to showcase key CRE capabilities and help you get started with local simulation quickly.
+This module is responsible for fetching asset prices from centralized exchanges (such as MEXC or Binance APIs) and writing those prices to the decentralized **Orbita Oracle Smart Contracts**. It supports two execution strategies:
 
-Follow the steps below to run the example:
+## 1. The Direct Bypass Method (`simulate.ts`)
 
-## 1. Initialize CRE project
+This method relies on raw Node.js execution. It uses `viem` to broadcast Ethereum transactions directly to your smart contracts, effectively **bypassing the Chainlink DON and the Keystone Forwarder security layers**.
 
-Start by initializing a new CRE project. This will scaffold the necessary project structure and a template workflow. Run cre init in the directory where you'd like your CRE project to live.
+*   **Why use this?** Because it helps circumvent Chainlink's testnet gas and fee issues (if you do not have sufficient LINK on the DON network) while still proving that your protocol's logic behaves perfectly.
+*   **How it works?** It queries the MEXC APIs via native Node `fetch()` and writes directly to the Smart Contract via your `CRE_ETH_PRIVATE_KEY` wallet signature.
 
-Example output:
-
-```
-Project name?: my_cre_project
-✔ Custom data feed: Typescript updating on-chain data periodically using offchain API data
-✔ Workflow name?: workflow01
-```
-
-## 2. Update .env file
-
-You need to add a private key to the .env file. This is specifically required if you want to simulate chain writes. For that to work the key should be valid and funded.
-If your workflow does not do any chain write then you can keep a dummy key as a private key. e.g.
-
-```
-CRE_ETH_PRIVATE_KEY=0000000000000000000000000000000000000000000000000000000000000001
-```
-
-## 3. Install dependencies
-
-If `bun` is not already installed, see https://bun.com/docs/installation for installing in your environment.
-
+**To run the Bypass workflow:**
 ```bash
-cd <workflow-name> && bun install
+bun install
+bun run simulate:direct
 ```
+*(This will independently execute `./simulate.ts` using Vite/Bun runner)*
 
-Example: For a workflow directory named `workflow01` the command would be:
+---
 
+## 2. The Native CRE Engine (`main.ts`)
+
+This is the **Official Chainlink CRE** implementation. Once deployed, this `main.ts` file is loaded directly into the Chainlink **Decentralized Oracle Network (DON)**.
+
+*   **Why use this?** Because executing natively through the Chainlink DON ensures that your payloads arrive officially via the **Keystone Forwarder**, leveraging true decentralized consensus and security rules.
+*   **How it works?** Instead of native `fetch()`, it uses the specialized `HTTPClient` from `@chainlink/cre-sdk`. The engine processes the workflow securely bounded within its node environments.
+
+### Requirements:
+To simulate this via the Chainlink CRE architecture, you first need the `cre` CLI tool installed ([see official documentation](https://cre.chain.link/getting-started)). Also, ensure your `.env` contains valid keys and that `project.yaml` is properly configured.
+
+**To simulate against the official Chainlink CRE Sandbox locally:**
 ```bash
-cd workflow01 && bun install
+bun install
+cre workflow simulate . --target staging-settings
 ```
+*(You must execute the command from the directory containing `main.ts` (this folder) or specify its path `cre workflow simulate data-feed-workflow`)*
 
-## 4. Configure RPC endpoints
-
-For local simulation to interact with a chain, you must specify RPC endpoints for the chains you interact with in the `project.yaml` file. This is required for submitting transactions and reading blockchain state.
-
-Note: The following 7 chains are supported in local simulation (both testnet and mainnet variants):
-
-- Ethereum (`ethereum-testnet-sepolia`, `ethereum-mainnet`)
-- Base (`ethereum-testnet-sepolia-base-1`, `ethereum-mainnet-base-1`)
-- Avalanche (`avalanche-testnet-fuji`, `avalanche-mainnet`)
-- Polygon (`polygon-testnet-amoy`, `polygon-mainnet`)
-- BNB Chain (`binance-smart-chain-testnet`, `binance-smart-chain-mainnet`)
-- Arbitrum (`ethereum-testnet-sepolia-arbitrum-1`, `ethereum-mainnet-arbitrum-1`)
-- Optimism (`ethereum-testnet-sepolia-optimism-1`, `ethereum-mainnet-optimism-1`)
-
-Add your preferred RPCs under the `rpcs` section. For chain names, refer to https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml
-
-## 5. Deploy contracts and prepare ABIs
-
-### 5a. Deploy contracts
-
-Deploy the BalanceReader, MessageEmitter, ReserveManager and SimpleERC20 contracts. You can either do this on a local chain or on a testnet using tools like cast/foundry.
-
-For a quick start, you can also use the pre-deployed contract addresses on Ethereum Sepolia—no action required on your part if you're just trying things out.
-
-### 5b. Prepare ABIs
-
-For each contract you would like to interact with, you need to provide the ABI `.ts` file so that TypeScript can provide type safety and autocomplete for the contract methods. The format of the ABI files is very similar to regular JSON format; you just need to export it as a variable and mark it `as const`. For example:
-
-```ts
-// IERC20.ts file
-export const IERC20Abi = {
-  // ... your ABI here ...
-} as const;
-```
-
-For a quick start, every contract used in this workflow is already provided in the `contracts` folder. You can use them as a reference.
-
-## 6. Configure workflow
-
-Configure `config.json` for the workflow
-
-- `schedule` should be set to `"0 */1 * * * *"` for every 1 minute(s) or any other cron expression you prefer, note [CRON service quotas](https://docs.chain.link/cre/service-quotas)
-- `url` should be set to existing reserves HTTP endpoint API
-- `tokenAddress` should be the SimpleERC20 contract address
-- `porAddress` should be the ReserveManager contract address
-- `proxyAddress` should be the UpdateReservesProxySimplified contract address
-- `balanceReaderAddress` should be the BalanceReader contract address
-- `messageEmitterAddress` should be the MessageEmitter contract address
-- `chainSelectorName` should be human-readable chain name of selected chain (refer to https://github.com/smartcontractkit/chain-selectors/blob/main/selectors.yml)
-- `gasLimit` should be the gas limit of chain write
-
-The config is already populated with deployed contracts in template.
-
-Note: Make sure your `workflow.yaml` file is pointing to the config.json, example:
-
-```yaml
-staging-settings:
-  user-workflow:
-    workflow-name: "workflow01"
-  workflow-artifacts:
-    workflow-path: "./main.ts"
-    config-path: "./config.json"
-    secrets-path: ""
-```
-
-## 7. Simulate the workflow
-
-Run the command from <b>project root directory</b> and pass in the path to the workflow directory.
-
+**To deploy onto the official Decentralized Oracles (via Keystone Forwarder):**
 ```bash
-cre workflow simulate <path-to-workflow-directory>
+cre workflow deploy . --target production-settings
 ```
 
-For a workflow directory named `workflow01` the exact command would be:
+---
 
-```bash
-cre workflow simulate ./workflow01
-```
-
-After this you will get a set of options similar to:
-
-```
-🚀 Workflow simulation ready. Please select a trigger:
-1. cron-trigger@1.0.0 Trigger
-2. evm:ChainSelector:16015286601757825753@1.0.0 LogTrigger
-
-Enter your choice (1-2):
-```
-
-You can simulate each of the following triggers types as follows
-
-### 7a. Simulating Cron Trigger Workflows
-
-Select option 1, and the workflow should immediately execute.
-
-### 7b. Simulating Log Trigger Workflows
-
-Select option 2, and then two additional prompts will come up and you can pass in the example inputs:
-
-Transaction Hash: 0x9394cc015736e536da215c31e4f59486a8d85f4cfc3641e309bf00c34b2bf410
-Log Event Index: 0
-
-The output will look like:
-
-```
-🔗 EVM Trigger Configuration:
-Please provide the transaction hash and event index for the EVM log event.
-Enter transaction hash (0x...): 0x9394cc015736e536da215c31e4f59486a8d85f4cfc3641e309bf00c34b2bf410
-Enter event index (0-based): 0
-Fetching transaction receipt for transaction 0x9394cc015736e536da215c31e4f59486a8d85f4cfc3641e309bf00c34b2bf410...
-Found log event at index 0: contract=0x1d598672486ecB50685Da5497390571Ac4E93FDc, topics=3
-Created EVM trigger log for transaction 0x9394cc015736e536da215c31e4f59486a8d85f4cfc3641e309bf00c34b2bf410, event 0
-```
+## Configurations
+You can toggle `USE_REAL_PRICES = true/false` inside both `main.ts` and `simulate.ts` to switch between fetching real-time MEXC prices or writing mock configurations of stablecoins. The polling addresses for Oracle targets are located inside `config.staging.json`.

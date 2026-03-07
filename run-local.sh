@@ -25,7 +25,7 @@ trap "cleanup" SIGINT SIGTERM
 echo ">>> Starting data-feed-workflow simulator..."
 (cd data-feed-workflow && bun run simulate:direct)
 
-# Execute liqudate-workflow
-echo ">>> Starting liqudate-workflow simulator..."
-(cd liqudate-workflow && bun run simulate:direct)
+# Execute liquidate-workflow
+echo ">>> Starting liquidate-workflow simulator..."
+(cd liquidate-workflow && bun run simulate:direct)
 echo "All executions complete."

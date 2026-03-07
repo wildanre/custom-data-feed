@@ -5,7 +5,7 @@
 # ==========================================================================
 local-simulation:
   user-workflow:
-    workflow-name: "liqudate-workflow-local"
+    workflow-name: "liquidate-workflow-local"
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.staging.json"
@@ -14,7 +14,7 @@ local-simulation:
 # ==========================================================================
 staging-settings:
   user-workflow:
-    workflow-name: "liqudate-workflow-staging"
+    workflow-name: "liquidate-workflow-staging"
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.staging.json"
@@ -23,7 +23,7 @@ staging-settings:
 # ==========================================================================
 production-settings:
   user-workflow:
-    workflow-name: "liqudate-workflow-production"
+    workflow-name: "liquidate-workflow-production"
   workflow-artifacts:
     workflow-path: "./main.ts"
     config-path: "./config.production.json"

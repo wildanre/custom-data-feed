@@ -11,7 +11,7 @@ Cron-triggered CRE workflow that monitors Orbita lending pools, detects undercol
 ## Install
 
 ```bash
-cd liqudate-workflow
+cd liquidate-workflow
 bun install
 ```
 
@@ -47,10 +47,10 @@ Runs the full CRE workflow logic against the real RPC but **mocks all writes**.
 Use this to verify the workflow logic before deploying.
 
 ```bash
-cre workflow simulate ./liqudate-workflow --target local-simulation
+cre workflow simulate ./liquidate-workflow --target local-simulation
 ```
 
-Or from inside `liqudate-workflow/`:
+Or from inside `liquidate-workflow/`:
 
 ```bash
 bun run simulate:local
@@ -76,10 +76,10 @@ The DON will run the cron automatically every minute and execute liquidations on
 Make sure `config.production.json` has `"enableLiquidation": true` before deploying.
 
 ```bash
-cre workflow deploy ./liqudate-workflow --target production-settings
+cre workflow deploy ./liquidate-workflow --target production-settings
 ```
 
-Or from inside `liqudate-workflow/`:
+Or from inside `liquidate-workflow/`:
 
 ```bash
 bun run deploy
