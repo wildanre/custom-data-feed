@@ -2,7 +2,7 @@
   "schedule": "0 */1 * * * *",
   "chainSelectorName": "ethereum-testnet-sepolia-worldchain-1",
   "helperAddress": "0xC72f2eb4A97F19ecD0C10b5201676a10B6D8bB67",
-  "indexerUrl": "https://orbita.senja.finance/graphql",
+  "indexerUrl": "https://indexer.0xorbita.xyz/graphql",
   "enableLiquidation": false,
   "pools": [
     {
